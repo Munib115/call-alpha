@@ -19,11 +19,11 @@ const MOCK_USERS: Record<string, string> = {
 const GROUP_ROOM_ID = 'd223c72b-8a8b-4a5f-9db0-123456789012';
 
 function getMockUserId(): string {
-  if (typeof document === 'undefined') return 'a1111111-1111-1111-1111-111111111111';
+  if (typeof document === 'undefined') return '';
   const value = `; ${document.cookie}`;
   const parts = value.split(`; trio_mock_user_id=`);
-  if (parts.length === 2) return parts.pop()?.split(';').shift() || 'a1111111-1111-1111-1111-111111111111';
-  return 'a1111111-1111-1111-1111-111111111111';
+  if (parts.length === 2) return parts.pop()?.split(';').shift() || '';
+  return '';
 }
 
 export default function GroupChatPage() {
