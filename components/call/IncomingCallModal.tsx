@@ -15,6 +15,12 @@ interface IncomingCallModalProps {
   onReject: () => void;
 }
 
+const MOCK_NAMES: Record<string, string> = {
+  'a1111111-1111-1111-1111-111111111111': 'Haseeb',
+  'b2222222-2222-2222-2222-222222222222': 'Ramesha',
+  'c3333333-3333-3333-3333-333333333333': 'Munib',
+};
+
 export default function IncomingCallModal({
   startedBy,
   onAccept,
@@ -24,12 +30,22 @@ export default function IncomingCallModal({
   const supabase = createClient();
 
   useEffect(() => {
+    // Set immediate fallback so the notification modal displays instantly (0ms delay)
+    const fallbackProfile: Profile = {
+      id: startedBy,
+      username: MOCK_NAMES[startedBy] || 'Incoming Caller',
+      status: 'in_call',
+      avatar_url: null,
+      created_at: new Date().toISOString(),
+    };
+    setCallerProfile(fallbackProfile);
+
     const fetchCallerProfile = async () => {
       const { data } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', startedBy)
-        .single();
+        .maybeSingle();
       
       if (data) {
         setCallerProfile(data as Profile);
@@ -38,7 +54,7 @@ export default function IncomingCallModal({
     fetchCallerProfile();
   }, [startedBy, supabase]);
 
-  if (!callerProfile) return null;
+  const displayName = callerProfile?.username || MOCK_NAMES[startedBy] || 'Incoming Caller';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md select-none animate-fade-in">
@@ -54,12 +70,12 @@ export default function IncomingCallModal({
         <div>
           <h3 className="text-lg font-bold text-white">Incoming Call</h3>
           <p className="text-sm text-slate-400 mt-1">
-            <span className="font-semibold text-indigo-400">{callerProfile.username}</span> is inviting you
+            <span className="font-semibold text-indigo-400">{displayName}</span> is inviting you
           </p>
         </div>
 
         <div className="flex items-center gap-3">
-          <Avatar src={callerProfile.avatar_url} alt={callerProfile.username} size="lg" />
+          <Avatar src={callerProfile?.avatar_url} alt={displayName} size="lg" />
         </div>
 
         {/* Action buttons */}

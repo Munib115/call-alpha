@@ -4,15 +4,20 @@ import Sidebar from '@/components/sidebar/Sidebar';
 import IncomingCallModal from '@/components/call/IncomingCallModal';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useState, useCallback } from 'react';
 import { useCallStore } from '@/lib/store/callStore';
+import { MobileSidebarContext } from '@/lib/context/MobileSidebarContext';
 
 export default function AppLayout({ children }: { children: ReactNode }) {
+  // ALL HOOKS MUST BE DECLARED UNCONDITIONALLY AT THE TOP BEFORE ANY EARLY RETURNS
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const router = useRouter();
   const supabase = createClient();
   const { incomingCall, setIncomingCall } = useCallStore();
+
+  const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), []);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -39,7 +44,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     };
   }, [router, supabase]);
 
-  // Subscribe to call alerts on mount if authenticated
+  // Subscribe to call alerts on mount
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -47,7 +52,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     
     globalAlerts
       .on('broadcast', { event: 'call-invite' }, ({ payload }) => {
-        if (payload.targetUserId === currentUserId) {
+        const isNotMe = payload.startedBy !== currentUserId;
+        const isTargeted = payload.targetUserId === currentUserId || payload.targetUserId === 'all' || !payload.targetUserId;
+
+        if (isNotMe && isTargeted) {
           setIncomingCall({
             id: payload.roomId,
             roomId: payload.roomId,
@@ -72,9 +80,22 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   };
 
   const handleRejectCall = () => {
-    setIncomingCall(null);
+    if (incomingCall) {
+      const globalAlerts = supabase.channel('trio-calls-alerts');
+      globalAlerts.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          globalAlerts.send({
+            type: 'broadcast',
+            event: 'call-declined',
+            payload: { roomId: incomingCall.roomId },
+          });
+        }
+      });
+      setIncomingCall(null);
+    }
   };
 
+  // CONDITIONAL EARLY RETURN AFTER ALL HOOKS
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
@@ -87,21 +108,26 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 select-none">
-      <Sidebar />
-      <main className="flex-1 h-full overflow-hidden bg-slate-900/20 relative">
-        {children}
-      </main>
-
-      {/* Global calling modal overlay */}
-      {incomingCall && (
-        <IncomingCallModal
-          startedBy={incomingCall.startedBy}
-          roomId={incomingCall.roomId}
-          onAccept={handleAcceptCall}
-          onReject={handleRejectCall}
+    <MobileSidebarContext.Provider value={{ openMobileSidebar }}>
+      <div className="flex h-screen w-screen overflow-hidden bg-slate-950 select-none relative">
+        <Sidebar
+          mobileOpen={mobileSidebarOpen}
+          onMobileClose={() => setMobileSidebarOpen(false)}
         />
-      )}
-    </div>
+        <main className="flex-1 w-full h-full overflow-hidden bg-slate-900/20 relative">
+          {children}
+        </main>
+
+        {/* Global calling modal overlay */}
+        {incomingCall && (
+          <IncomingCallModal
+            startedBy={incomingCall.startedBy}
+            roomId={incomingCall.roomId}
+            onAccept={handleAcceptCall}
+            onReject={handleRejectCall}
+          />
+        )}
+      </div>
+    </MobileSidebarContext.Provider>
   );
 }

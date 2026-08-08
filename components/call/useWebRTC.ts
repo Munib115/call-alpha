@@ -24,6 +24,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
   } = useCallStore();
 
   const pcs = useRef<Record<string, RTCPeerConnection>>({});
+  const remoteMediaStreams = useRef<Record<string, MediaStream>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const signalingChannelRef = useRef<RealtimeChannel | null>(null);
@@ -42,18 +43,18 @@ export function useWebRTC(roomId: string, localUserId: string) {
         const res = await fetch('/api/turn-creds');
         if (res.ok) {
           const data = await res.json();
-          if (data && data.iceServers) {
+          if (data && data.iceServers && data.iceServers.length > 0) {
             setIceServers(data.iceServers);
           }
         }
       } catch (err) {
-        console.error('Could not fetch dynamic TURN creds, falling back to env vars', err);
+        console.warn('Dynamic TURN creds fetch error, using default STUN list', err);
       }
     };
     fetchTurnCreds();
   }, []);
 
-  // Helper to start the local camera/mic stream
+  // Helper to start local camera/microphone media stream
   const startLocalStream = useCallback(async (video = true, audio = true) => {
     if (localStreamRef.current) return localStreamRef.current;
     try {
@@ -61,7 +62,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
       setLocalStream(stream);
       return stream;
     } catch (err) {
-      console.error('Failed to get local stream', err);
+      console.error('Failed to get local user media stream:', err);
       throw err;
     }
   }, [setLocalStream]);
@@ -86,9 +87,19 @@ export function useWebRTC(roomId: string, localUserId: string) {
     const pc = createPeerConnection(
       iceServers,
       (event) => {
-        if (event.streams && event.streams[0]) {
-          setRemoteStream(peerId, event.streams[0]);
+        let existingStream = remoteMediaStreams.current[peerId];
+        if (!existingStream) {
+          existingStream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream();
+          remoteMediaStreams.current[peerId] = existingStream;
         }
+
+        if (!existingStream.getTracks().some((t) => t.id === event.track.id)) {
+          existingStream.addTrack(event.track);
+        }
+
+        // Always create a FRESH MediaStream instance wrapper so Zustand & React detect state change
+        const freshStream = new MediaStream(existingStream.getTracks());
+        setRemoteStream(peerId, freshStream);
       },
       (event) => {
         if (event.candidate) {
@@ -97,15 +108,19 @@ export function useWebRTC(roomId: string, localUserId: string) {
       }
     );
 
-    // Add local tracks to this connection
-    currentLocalStream.getTracks().forEach((track) => {
-      pc.addTrack(track, currentLocalStream);
-    });
+    // Add all local media tracks to this peer connection
+    if (currentLocalStream) {
+      currentLocalStream.getTracks().forEach((track) => {
+        pc.addTrack(track, currentLocalStream);
+      });
+    }
 
     // Handle connection state changes
     pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${peerId} state:`, pc.connectionState);
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         removeRemoteStream(peerId);
+        delete remoteMediaStreams.current[peerId];
         pc.close();
         delete pcs.current[peerId];
       }
@@ -117,6 +132,8 @@ export function useWebRTC(roomId: string, localUserId: string) {
 
   // Initiate call connection to a peer (send Offer)
   const initiateCallToPeer = useCallback(async (peerId: string) => {
+    if (!localUserId || !peerId || peerId === localUserId) return;
+    
     let currentStream = localStreamRef.current;
     if (!currentStream) {
       currentStream = await startLocalStream(true, true);
@@ -124,7 +141,10 @@ export function useWebRTC(roomId: string, localUserId: string) {
 
     const pc = getOrCreatePeerConnection(peerId, currentStream);
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pc.setLocalDescription(offer);
       
       if (signalingChannelRef.current) {
@@ -149,7 +169,25 @@ export function useWebRTC(roomId: string, localUserId: string) {
     }
 
     const pc = getOrCreatePeerConnection(payload.from, currentStream);
+
+    // Resolve Offer Glare / Collision (Simultaneous offers)
+    const isOfferCollision = pc.signalingState !== 'stable';
+    const isImpolite = localUserId.localeCompare(payload.from) > 0;
+
+    if (isOfferCollision && isImpolite) {
+      console.log(`[WebRTC] Ignoring offer from ${payload.from} due to collision (controlling peer)`);
+      return;
+    }
+
     try {
+      if (isOfferCollision) {
+        try {
+          await pc.setLocalDescription({ type: 'rollback' } as RTCSessionDescriptionInit);
+        } catch (e) {
+          console.warn('[WebRTC] Rollback error:', e);
+        }
+      }
+
       await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -172,7 +210,9 @@ export function useWebRTC(roomId: string, localUserId: string) {
     const pc = pcs.current[payload.from];
     if (pc) {
       try {
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        }
       } catch (err) {
         console.error(`Error setting remote description answer from ${payload.from}`, err);
       }
@@ -199,6 +239,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
       pc.close();
       delete pcs.current[payload.from];
     }
+    delete remoteMediaStreams.current[payload.from];
     removeRemoteStream(payload.from);
   }, [removeRemoteStream]);
 
@@ -227,27 +268,23 @@ export function useWebRTC(roomId: string, localUserId: string) {
   // Screen Share Toggle Action
   const toggleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
-      // Stop Screen Share, revert to camera
+      // Stop Screen Share and revert back to camera stream
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((track) => track.stop());
         screenStreamRef.current = null;
       }
       
       try {
-        // Stop current camera tracks
-        if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach((t) => t.stop());
-        }
-        
         const camStream = await getLocalUserMedia({ video: true, audio: !isMuted });
         setLocalStream(camStream);
 
-        // Replace tracks in all peer connections
+        // Replace video tracks across all active peer connections
         const newVideoTrack = camStream.getVideoTracks()[0];
         Object.values(pcs.current).forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender && newVideoTrack) {
-            sender.replaceTrack(newVideoTrack);
+          const senders = pc.getSenders();
+          const videoSender = senders.find((s) => s.track?.kind === 'video');
+          if (videoSender && newVideoTrack) {
+            videoSender.replaceTrack(newVideoTrack);
           }
         });
 
@@ -256,22 +293,24 @@ export function useWebRTC(roomId: string, localUserId: string) {
         console.error('Failed to revert to camera stream', err);
       }
     } else {
-      // Start Screen Share
+      // Start Screen Share capture
       try {
         const screenStream = await getScreenShareMedia();
         screenStreamRef.current = screenStream;
         const screenVideoTrack = screenStream.getVideoTracks()[0];
 
-        // Replace tracks in all peer connections
+        // Replace video tracks across all active peer connections with screen share track
         Object.values(pcs.current).forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
-          if (sender && screenVideoTrack) {
-            sender.replaceTrack(screenVideoTrack);
+          const senders = pc.getSenders();
+          const videoSender = senders.find((s) => s.track?.kind === 'video');
+          if (videoSender && screenVideoTrack) {
+            videoSender.replaceTrack(screenVideoTrack);
+          } else if (screenVideoTrack) {
+            pc.addTrack(screenVideoTrack, screenStream);
           }
         });
 
-        // Update localStream in Zustand to render the screen stream locally
-        // Temporarily swap track or combine with audio
+        // Combine screen video with current mic audio for local display
         const combinedStream = new MediaStream([
           screenVideoTrack,
           ...(localStreamRef.current ? localStreamRef.current.getAudioTracks() : []),
@@ -279,12 +318,12 @@ export function useWebRTC(roomId: string, localUserId: string) {
         setLocalStream(combinedStream);
         setIsScreenSharing(true);
 
-        // Revert automatically if user clicks "Stop Sharing" from browser bar
+        // Revert automatically when user clicks "Stop sharing" in browser banner
         screenVideoTrack.onended = () => {
           toggleScreenShare();
         };
       } catch (err) {
-        console.error('Failed to share screen', err);
+        console.error('Failed to share screen:', err);
       }
     }
   }, [isScreenSharing, isMuted, setLocalStream, setIsScreenSharing]);
@@ -297,7 +336,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
       signalingChannelRef.current = null;
     }
 
-    // Close all connections
+    // Close all peer connections
     Object.keys(pcs.current).forEach((peerId) => {
       pcs.current[peerId].close();
       delete pcs.current[peerId];
@@ -308,11 +347,11 @@ export function useWebRTC(roomId: string, localUserId: string) {
       screenStreamRef.current = null;
     }
 
-    // Reset global state
+    remoteMediaStreams.current = {};
     resetCall();
   }, [localUserId, resetCall, supabase]);
 
-  // Subscribe to signaling channel on mount or room changes
+  // Subscribe to WebRTC signaling channel
   useEffect(() => {
     if (!roomId || !localUserId) return;
 
@@ -327,27 +366,29 @@ export function useWebRTC(roomId: string, localUserId: string) {
       .on('presence', { event: 'sync' }, () => {
         const presenceState = channel.presenceState();
         const activeUsers: string[] = [];
-        
-        Object.keys(presenceState).forEach((key) => {
-          const list = presenceState[key] as unknown[];
-          if (list && list.length > 0) {
-            activeUsers.push(key);
-          }
+
+        // Extract item.userId from Supabase presence payloads
+        Object.values(presenceState).forEach((presenceList) => {
+          (presenceList as Array<{ userId?: string }>).forEach((item) => {
+            if (item && item.userId && !activeUsers.includes(item.userId)) {
+              activeUsers.push(item.userId);
+            }
+          });
         });
         
         setParticipants(activeUsers);
 
-        // If I just joined, I need to initiate call to everyone else already present in the room
+        // Initiate call connection to peers (deterministically based on user ID ordering to avoid offer glare)
         activeUsers.forEach((peerId) => {
           if (peerId !== localUserId && !pcs.current[peerId]) {
-            // New user initiates to avoid collision
-            initiateCallToPeer(peerId);
+            if (localUserId.localeCompare(peerId) > 0) {
+              initiateCallToPeer(peerId);
+            }
           }
         });
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          // Get local stream before tracking presence so we are ready to negotiate
           await startLocalStream(true, true);
           await channel.track({
             userId: localUserId,
@@ -357,7 +398,6 @@ export function useWebRTC(roomId: string, localUserId: string) {
       });
 
     return () => {
-      // Clean up on component unmount
       endCall();
     };
   }, [

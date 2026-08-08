@@ -17,6 +17,8 @@ export interface Message {
   room_id: string;
   sender_id: string;
   content: string;
+  type?: 'text' | 'image' | 'video' | 'audio';
+  media_url?: string | null;
   created_at: string;
   sender?: Profile;
 }

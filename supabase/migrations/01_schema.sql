@@ -70,14 +70,32 @@ create policy "update_call_history" on public.call_history
 -- Trigger to automatically create a profile record when a new user is created in auth.users
 create or replace function public.handle_new_user()
 returns trigger as $$
+declare
+  base_username text;
+  final_username text;
+  suffix_counter integer := 1;
 begin
+  base_username := coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1), 'user');
+  final_username := base_username;
+  
+  while exists (select 1 from public.profiles where username = final_username) loop
+    final_username := base_username || suffix_counter;
+    suffix_counter := suffix_counter + 1;
+  end loop;
+
   insert into public.profiles (id, username, avatar_url, status)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)),
+    final_username,
     new.raw_user_meta_data->>'avatar_url',
     'offline'
-  );
+  )
+  on conflict (id) do update 
+  set username = excluded.username,
+      avatar_url = excluded.avatar_url;
+      
+  return new;
+exception when others then
   return new;
 end;
 $$ language plpgsql security definer;

@@ -14,8 +14,14 @@ import VideoCallIcon from '@mui/icons-material/VideoCall';
 import HistoryIcon from '@mui/icons-material/History';
 import SettingsIcon from '@mui/icons-material/Settings';
 import LogoutIcon from '@mui/icons-material/Logout';
+import CloseIcon from '@mui/icons-material/Close';
 
-export default function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+}
+
+export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const router = useRouter();
@@ -48,8 +54,9 @@ export default function Sidebar() {
       // Fetch all profiles
       const { data: allProfiles } = await supabase
         .from('profiles')
-        .select('*');
-      
+        .select('*')
+        .order('username', { ascending: true });
+
       if (allProfiles) {
         setProfiles(allProfiles as Profile[]);
       }
@@ -57,12 +64,13 @@ export default function Sidebar() {
 
     fetchUserData();
 
-    // Subscribe to profile changes
+    // Subscribe to profile status updates (unique channel per mount to avoid conflicts)
+    const channelId = `profiles-changes-${Math.random().toString(36).slice(2)}`;
     const profilesChannel = supabase
-      .channel('public:profiles')
+      .channel(channelId)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'profiles' },
+        { event: 'UPDATE', schema: 'public', table: 'profiles' },
         (payload) => {
           setProfiles((prev) => {
             const updated = payload.new as Profile;
@@ -75,7 +83,6 @@ export default function Sidebar() {
             return next;
           });
 
-          // Also update current user if applicable
           setCurrentUser((prev) => {
             if (prev && prev.id === (payload.new as Profile).id) {
               return payload.new as Profile;
@@ -91,9 +98,7 @@ export default function Sidebar() {
     };
   }, [supabase, router]);
 
-  // Handle Logout
   const handleLogout = async () => {
-    // Set status to offline before signing out
     if (currentUser) {
       await supabase
         .from('profiles')
@@ -105,25 +110,28 @@ export default function Sidebar() {
     router.refresh();
   };
 
-  // Determine user display status
   const getUserStatus = (user: Profile): 'online' | 'offline' | 'in_call' => {
     if (user.status === 'in_call') return 'in_call';
     return onlineUsers[user.id] ? 'online' : 'offline';
   };
 
-  // Start Call trigger
   const handleStartCall = (targetUserId: string) => {
     if (!currentUser) return;
-    // Generate a unique room id or use an existing one. For 1:1, we can create a combined UUID.
+    if (onMobileClose) onMobileClose();
     const sortedIds = [currentUser.id, targetUserId].sort();
     const roomId = `call-${sortedIds[0].substring(0,8)}-${sortedIds[1].substring(0,8)}`;
     router.push(`/call/${roomId}?initiate=true&to=${targetUserId}`);
   };
 
-  return (
-    <div className="w-80 h-screen bg-slate-950 border-r border-white/[0.06] flex flex-col text-slate-200">
+  const navigateTo = (path: string) => {
+    if (onMobileClose) onMobileClose();
+    router.push(path);
+  };
+
+  const SidebarBody = (
+    <div className="w-full h-full flex flex-col text-slate-200">
       {/* Header logo / branding */}
-      <div className="p-6 border-b border-white/[0.06]">
+      <div className="p-6 border-b border-white/[0.06] flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-emerald-600 flex items-center justify-center font-extrabold text-white text-lg shadow-lg shadow-indigo-950/40">
             T
@@ -133,6 +141,16 @@ export default function Sidebar() {
             <p className="text-xs text-slate-500 font-medium">3-Person Mesh Calling</p>
           </div>
         </div>
+
+        {/* Mobile close button */}
+        {onMobileClose && (
+          <button
+            onClick={onMobileClose}
+            className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white bg-slate-900 border border-white/[0.06]"
+          >
+            <CloseIcon fontSize="small" />
+          </button>
+        )}
       </div>
 
       {/* Main navigation list */}
@@ -144,7 +162,7 @@ export default function Sidebar() {
           </h3>
           <div className="space-y-1">
             <button
-              onClick={() => router.push('/chat')}
+              onClick={() => navigateTo('/chat')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                 pathname === '/chat'
                   ? 'bg-gradient-to-r from-indigo-500/10 to-emerald-500/10 border-l-2 border-indigo-500 text-indigo-200 font-semibold'
@@ -158,7 +176,7 @@ export default function Sidebar() {
               </span>
             </button>
             <button
-              onClick={() => router.push('/history')}
+              onClick={() => navigateTo('/history')}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                 pathname === '/history'
                   ? 'bg-gradient-to-r from-indigo-500/10 to-emerald-500/10 border-l-2 border-indigo-500 text-indigo-200 font-semibold'
@@ -194,7 +212,7 @@ export default function Sidebar() {
                     }`}
                   >
                     <button
-                      onClick={() => router.push(dmPath)}
+                      onClick={() => navigateTo(dmPath)}
                       className="flex items-center gap-3 flex-1 min-w-0 text-left"
                     >
                       <Avatar src={p.avatar_url} alt={p.username} status={userStatus} />
@@ -207,10 +225,10 @@ export default function Sidebar() {
                         </p>
                       </div>
                     </button>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                       <IconButton
                         title="Chat"
-                        onClick={() => router.push(dmPath)}
+                        onClick={() => navigateTo(dmPath)}
                         className="!p-2"
                       >
                         <ChatIcon className="text-[16px] text-slate-400" />
@@ -251,7 +269,7 @@ export default function Sidebar() {
             <div className="flex gap-0.5">
               <IconButton
                 title="Settings"
-                onClick={() => router.push('/settings')}
+                onClick={() => navigateTo('/settings')}
                 className="!p-2 hover:bg-white/[0.04]"
               >
                 <SettingsIcon className="text-[18px] text-slate-400 hover:text-white" />
@@ -268,5 +286,27 @@ export default function Sidebar() {
         </div>
       )}
     </div>
+  );
+
+  return (
+    <>
+      {/* Desktop Sidebar — Pinned on left for md+ screens */}
+      <aside className="hidden md:flex w-80 h-screen flex-shrink-0 bg-slate-950 border-r border-white/[0.06] flex-col text-slate-200">
+        {SidebarBody}
+      </aside>
+
+      {/* Mobile Drawer Overlay — Slides out over screen on mobile */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden">
+          <div
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity animate-fade-in"
+            onClick={onMobileClose}
+          />
+          <div className="relative w-80 max-w-[85vw] h-full bg-slate-950 border-r border-white/[0.08] flex flex-col z-10 shadow-2xl animate-slide-right">
+            {SidebarBody}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

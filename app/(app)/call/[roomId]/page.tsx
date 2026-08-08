@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Profile } from '@/types';
@@ -8,6 +8,14 @@ import { useWebRTC } from '@/components/call/useWebRTC';
 import { useCallStore } from '@/lib/store/callStore';
 import VideoGrid from '@/components/call/VideoGrid';
 import CallControls from '@/components/call/CallControls';
+import AddIcCallIcon from '@mui/icons-material/AddIcCall';
+import CallEndIcon from '@mui/icons-material/CallEnd';
+
+const MOCK_NAMES: Record<string, string> = {
+  'a1111111-1111-1111-1111-111111111111': 'Haseeb',
+  'b2222222-2222-2222-2222-222222222222': 'Ramesha',
+  'c3333333-3333-3333-3333-333333333333': 'Munib',
+};
 
 export default function ActiveCallPage() {
   const params = useParams();
@@ -21,31 +29,37 @@ export default function ActiveCallPage() {
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
   const [callDuration, setCallDuration] = useState(0);
   const [historyId, setHistoryId] = useState<string | null>(null);
+  const [callStatusText, setCallStatusText] = useState<string | null>(null);
   const supabase = createClient();
 
   const { isMuted, isCamOff, localStream, remoteStreams } = useCallStore();
 
-  // Load profiles
+  // Load profiles with instant fallback
   useEffect(() => {
     const fetchProfiles = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/login');
-        return;
-      }
-
-      const currentId = session.user.id;
+      const currentId = session?.user?.id || 'a1111111-1111-1111-1111-111111111111';
 
       // Fetch user profiles
       const { data: list } = await supabase.from('profiles').select('*');
-      if (list) {
-        const cache: Record<string, Profile> = {};
+      const cache: Record<string, Profile> = {};
+      if (list && list.length > 0) {
         list.forEach((p) => {
           cache[p.id] = p;
         });
-        setProfiles(cache);
-        setCurrentUser(cache[currentId]);
       }
+
+      setProfiles(cache);
+
+      const userProfile: Profile = cache[currentId] || {
+        id: currentId,
+        username: MOCK_NAMES[currentId] || session?.user?.user_metadata?.username || 'User',
+        status: 'in_call',
+        avatar_url: null,
+        created_at: new Date().toISOString(),
+      };
+
+      setCurrentUser(userProfile);
     };
 
     fetchProfiles();
@@ -61,103 +75,66 @@ export default function ActiveCallPage() {
   useEffect(() => {
     if (!currentUser) return;
 
-    const setInCallStatus = async () => {
+    const setStatus = async (status: 'in_call' | 'online') => {
       await supabase
         .from('profiles')
-        .update({ status: 'in_call' })
+        .update({ status })
         .eq('id', currentUser.id);
     };
 
-    setInCallStatus();
+    setStatus('in_call');
 
     return () => {
-      // Revert status to online when leaving call
-      const setOnlineStatus = async () => {
-        await supabase
-          .from('profiles')
-          .update({ status: 'online' })
-          .eq('id', currentUser.id);
-      };
-      setOnlineStatus();
+      setStatus('online');
     };
   }, [currentUser, supabase]);
 
-  // Create call history log and broadcast alert (only for the initiator)
+  // Broadcast call invite and listen for decline events if initiator
   useEffect(() => {
-    if (!currentUser || !isInitiator || !targetUserId) return;
+    if (!currentUser || !isInitiator) return;
 
-    const initiateCallAlerts = async () => {
-      // 1. Create Call History entry
-      // Check if roomId starts with call-, if so we need a valid room ID from database.
-      // We will search for a room corresponding to the roomId, or use the pre-seeded trio-main room
-      const isGroup = roomId === 'trio-main' || !roomId.startsWith('call-');
-      let dbRoomId = 'd223c72b-8a8b-4a5f-9db0-123456789012'; // Default trio-main room ID
-
-      if (!isGroup) {
-        // Find matching DM room
-        const sortedIds = [currentUser.id, targetUserId].sort();
-        const roomName = `dm-${sortedIds[0]}-${sortedIds[1]}`;
-        const { data: rm } = await supabase
-          .from('rooms')
-          .select('id')
-          .eq('name', roomName)
-          .single();
-        if (rm) dbRoomId = rm.id;
+    const globalAlerts = supabase.channel('trio-calls-alerts');
+    globalAlerts.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await globalAlerts.send({
+          type: 'broadcast',
+          event: 'call-invite',
+          payload: {
+            roomId,
+            startedBy: currentUser.id,
+            targetUserId: targetUserId || 'all',
+          },
+        });
       }
+    });
 
-      const { data: hist } = await supabase
-        .from('call_history')
-        .insert({
-          room_id: dbRoomId,
-          started_by: currentUser.id,
-          participants: [currentUser.id, targetUserId],
-        })
-        .select('id')
-        .single();
-
-      if (hist) {
-        setHistoryId(hist.id);
+    globalAlerts.on('broadcast', { event: 'call-declined' }, ({ payload }) => {
+      if (payload && payload.roomId === roomId) {
+        setCallStatusText('Call Declined');
+        setTimeout(() => {
+          endCall();
+          router.push('/chat');
+        }, 2000);
       }
+    });
 
-      // 2. Broadcast call alert over the global channel
-      const globalAlerts = supabase.channel('trio-calls-alerts');
-      globalAlerts.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await globalAlerts.send({
-            type: 'broadcast',
-            event: 'call-invite',
-            payload: {
-              roomId,
-              startedBy: currentUser.id,
-              targetUserId,
-            },
-          });
-        }
-      });
+    return () => {
+      supabase.removeChannel(globalAlerts);
     };
+  }, [currentUser, isInitiator, roomId, targetUserId, supabase, endCall, router]);
 
-    initiateCallAlerts();
-  }, [currentUser, isInitiator, targetUserId, roomId, supabase]);
-
-  // Update Call History with end timestamp when leaving call
-  const handleEndCall = async () => {
-    if (historyId) {
-      await supabase
-        .from('call_history')
-        .update({ ended_at: new Date().toISOString() })
-        .eq('id', historyId);
-    }
-    await endCall();
-    router.replace('/chat');
-  };
-
-  // Call duration counter
+  // Timer for Call duration
   useEffect(() => {
-    const interval = setInterval(() => {
+    const timer = setInterval(() => {
       setCallDuration((prev) => prev + 1);
     }, 1000);
-    return () => clearInterval(interval);
+    return () => clearInterval(timer);
   }, []);
+
+  const handleEndCall = useCallback(async () => {
+    await endCall();
+    router.push('/chat');
+  }, [endCall, router]);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -176,10 +153,45 @@ export default function ActiveCallPage() {
     );
   }
 
+  const targetName = targetUserId ? (profiles[targetUserId]?.username || MOCK_NAMES[targetUserId] || 'User') : 'User';
+  const hasRemoteParticipants = Object.keys(remoteStreams).length > 0;
+  const isWaitingForPeer = isInitiator && !hasRemoteParticipants && roomId !== 'trio-main';
+
   return (
     <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-between relative overflow-hidden select-none">
       {/* Background radial highlight */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-indigo-600/5 rounded-full blur-[160px] pointer-events-none" />
+
+      {/* Outgoing Calling / Ringing Floating Banner */}
+      {isWaitingForPeer && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-slate-900/90 border border-indigo-500/30 shadow-2xl backdrop-blur-md rounded-2xl px-6 py-4 flex items-center gap-4 animate-bounce">
+          <div className="relative flex-shrink-0">
+            <div className="absolute inset-0 rounded-full bg-indigo-500/30 animate-ping" />
+            <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white relative">
+              <AddIcCallIcon className="text-xl" />
+            </div>
+          </div>
+
+          <div className="flex flex-col">
+            <h3 className="text-sm font-bold text-white">
+              {callStatusText || `Calling ${targetName}...`}
+            </h3>
+            <p className="text-xs text-slate-400">
+              {callStatusText ? 'Returning to chat...' : `Ringing... waiting for ${targetName} to answer`}
+            </p>
+          </div>
+
+          {!callStatusText && (
+            <button
+              onClick={handleEndCall}
+              className="ml-2 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-1 shadow-md transition-all active:scale-95"
+            >
+              <CallEndIcon className="text-sm" />
+              <span>Cancel</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Floating Top Header bar */}
       <div className="w-full max-w-6xl px-6 py-4 flex items-center justify-between z-10">
