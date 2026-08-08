@@ -11,6 +11,7 @@ import IconButton from '@/components/ui/IconButton';
 import ForumIcon from '@mui/icons-material/Forum';
 import ChatIcon from '@mui/icons-material/Chat';
 import VideoCallIcon from '@mui/icons-material/VideoCall';
+import CallIcon from '@mui/icons-material/Call';
 import HistoryIcon from '@mui/icons-material/History';
 import SettingsIcon from '@mui/icons-material/Settings';
 import LogoutIcon from '@mui/icons-material/Logout';
@@ -115,12 +116,12 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
     return onlineUsers[user.id] ? 'online' : 'offline';
   };
 
-  const handleStartCall = (targetUserId: string) => {
+  const handleStartCall = (targetUserId: string, mode: 'video' | 'voice' = 'video') => {
     if (!currentUser) return;
     if (onMobileClose) onMobileClose();
     const sortedIds = [currentUser.id, targetUserId].sort();
     const roomId = `call-${sortedIds[0].substring(0,8)}-${sortedIds[1].substring(0,8)}`;
-    router.push(`/call/${roomId}?initiate=true&to=${targetUserId}`);
+    router.push(`/call/${roomId}?initiate=true&to=${targetUserId}&mode=${mode}`);
   };
 
   const navigateTo = (path: string) => {
@@ -234,9 +235,17 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
                         <ChatIcon className="text-[16px] text-slate-400" />
                       </IconButton>
                       <IconButton
+                        title="Voice Call"
+                        disabled={userStatus === 'offline'}
+                        onClick={() => handleStartCall(p.id, 'voice')}
+                        className="!p-2 hover:bg-indigo-500/10"
+                      >
+                        <CallIcon className="text-[16px] text-indigo-400" />
+                      </IconButton>
+                      <IconButton
                         title="Video Call"
                         disabled={userStatus === 'offline'}
-                        onClick={() => handleStartCall(p.id)}
+                        onClick={() => handleStartCall(p.id, 'video')}
                         className="!p-2 hover:bg-emerald-500/10"
                       >
                         <VideoCallIcon className="text-[16px] text-emerald-400" />

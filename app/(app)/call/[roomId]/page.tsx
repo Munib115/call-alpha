@@ -10,12 +10,19 @@ import VideoGrid from '@/components/call/VideoGrid';
 import CallControls from '@/components/call/CallControls';
 import AddIcCallIcon from '@mui/icons-material/AddIcCall';
 import CallEndIcon from '@mui/icons-material/CallEnd';
+import CallIcon from '@mui/icons-material/Call';
 
 const MOCK_NAMES: Record<string, string> = {
   'a1111111-1111-1111-1111-111111111111': 'Haseeb',
   'b2222222-2222-2222-2222-222222222222': 'Ramesha',
   'c3333333-3333-3333-3333-333333333333': 'Munib',
 };
+
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
 
 function CallRoomContent() {
   const params = useParams();
@@ -24,6 +31,7 @@ function CallRoomContent() {
   const roomId = (params.roomId as string) || 'call-default';
   const isInitiator = searchParams.get('initiate') === 'true';
   const targetUserId = searchParams.get('to');
+  const callMode = (searchParams.get('mode') || 'video') as 'video' | 'voice';
 
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Record<string, Profile>>({});
@@ -68,7 +76,8 @@ function CallRoomContent() {
   // Hook up WebRTC functionality
   const { toggleMute, toggleCamera, toggleScreenShare, endCall, participants } = useWebRTC(
     roomId,
-    currentUser?.id || ''
+    currentUser?.id || '',
+    callMode
   );
 
   // Set database status to 'in_call' on mount and back to 'online' on unmount
@@ -207,16 +216,52 @@ function CallRoomContent() {
         </div>
       )}
 
-      {/* Main Video Tile Grid */}
+      {/* Main Content: Video Grid or Voice-Only UI */}
       <div className="flex-1 p-4 md:p-6 overflow-hidden flex items-center justify-center z-10">
-        <VideoGrid
-          localStream={localStream}
-          remoteStreams={remoteStreams}
-          currentUsername={currentUser?.username || 'You'}
-          profiles={profiles}
-          isLocalMuted={isMuted}
-          isLocalCamOff={isCamOff}
-        />
+        {callMode === 'voice' ? (
+          /* Voice-Only Call UI */
+          <div className="flex flex-col items-center justify-center gap-6 text-center">
+            {/* Ripple animation rings */}
+            <div className="relative flex items-center justify-center">
+              <div className="absolute w-40 h-40 rounded-full bg-indigo-500/10 animate-ping" style={{ animationDuration: '2s' }} />
+              <div className="absolute w-56 h-56 rounded-full bg-indigo-500/5 animate-ping" style={{ animationDuration: '2.5s' }} />
+              <div className="w-28 h-28 rounded-full bg-gradient-to-br from-indigo-600 to-indigo-800 shadow-2xl shadow-indigo-900/60 flex items-center justify-center relative z-10">
+                <CallIcon className="text-white" style={{ fontSize: '3rem' }} />
+              </div>
+            </div>
+            <div>
+              <p className="text-white text-xl font-bold mb-1">
+                {isWaitingForPeer ? `Calling ${targetName}...` : `Voice Call with ${targetName}`}
+              </p>
+              <p className="text-slate-400 text-sm">{formatDuration(callDuration)}</p>
+            </div>
+            {/* Connected peers */}
+            {!isWaitingForPeer && (
+              <div className="flex gap-3 mt-2">
+                {Object.keys(remoteStreams).map((peerId) => {
+                  const peer = profiles[peerId];
+                  return (
+                    <div key={peerId} className="flex flex-col items-center gap-2">
+                      <div className="w-12 h-12 rounded-full bg-emerald-600/20 border-2 border-emerald-500/50 flex items-center justify-center text-emerald-400 font-bold">
+                        {peer?.username?.[0]?.toUpperCase() || '?'}
+                      </div>
+                      <span className="text-xs text-slate-400">{peer?.username || peerId.slice(0,8)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <VideoGrid
+            localStream={localStream}
+            remoteStreams={remoteStreams}
+            currentUsername={currentUser?.username || 'You'}
+            profiles={profiles}
+            isLocalMuted={isMuted}
+            isLocalCamOff={isCamOff}
+          />
+        )}
       </div>
 
       {/* Fixed Bottom Call Controls Bar */}

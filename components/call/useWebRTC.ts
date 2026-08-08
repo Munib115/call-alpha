@@ -6,7 +6,7 @@ import { createPeerConnection } from '@/lib/webrtc/createPeerConnection';
 import { sendSignal } from '@/lib/webrtc/signaling';
 import { getLocalUserMedia, getScreenShareMedia } from '@/lib/webrtc/mediaDevices';
 
-export function useWebRTC(roomId: string, localUserId: string) {
+export function useWebRTC(roomId: string, localUserId: string, callMode: 'video' | 'voice' = 'video') {
   const supabase = createClient();
   
   // Zustand State hooks
@@ -57,15 +57,17 @@ export function useWebRTC(roomId: string, localUserId: string) {
   // Helper to start local camera/microphone media stream
   const startLocalStream = useCallback(async (video = true, audio = true) => {
     if (localStreamRef.current) return localStreamRef.current;
+    // Voice-only calls skip camera entirely
+    const useVideo = callMode === 'video' ? video : false;
     try {
-      const stream = await getLocalUserMedia({ video, audio });
+      const stream = await getLocalUserMedia({ video: useVideo, audio });
       setLocalStream(stream);
       return stream;
     } catch (err) {
       console.warn('Failed to get local user media stream:', err);
       return null;
     }
-  }, [setLocalStream]);
+  }, [setLocalStream, callMode]);
 
   // Helper to send ICE candidates
   const handleIceCandidate = useCallback((peerId: string, candidate: RTCIceCandidate) => {
