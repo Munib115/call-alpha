@@ -176,7 +176,7 @@ export function useWebRTC(roomId: string, localUserId: string, callMode: 'video'
 
     // Resolve Offer Glare / Collision (Simultaneous offers)
     const isOfferCollision = pc.signalingState !== 'stable';
-    const isImpolite = localUserId.localeCompare(payload.from) > 0;
+    const isImpolite = typeof localUserId === 'string' && typeof payload?.from === 'string' ? localUserId.localeCompare(payload.from) > 0 : false;
 
     if (isOfferCollision && isImpolite) {
       console.log(`[WebRTC] Ignoring offer from ${payload.from} due to collision (controlling peer)`);
@@ -384,8 +384,8 @@ export function useWebRTC(roomId: string, localUserId: string, callMode: 'video'
 
         // Initiate call connection to peers (deterministically based on user ID ordering to avoid offer glare)
         activeUsers.forEach((peerId) => {
-          if (peerId !== localUserId && !pcs.current[peerId]) {
-            if (localUserId.localeCompare(peerId) > 0) {
+          if (peerId && peerId !== localUserId && !pcs.current[peerId]) {
+            if (typeof localUserId === 'string' && typeof peerId === 'string' && localUserId.localeCompare(peerId) > 0) {
               initiateCallToPeer(peerId);
             }
           }

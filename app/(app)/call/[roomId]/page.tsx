@@ -24,6 +24,14 @@ function formatDuration(seconds: number): string {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+function readMockUserId(): string {
+  if (typeof document === 'undefined') return '';
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; trio_mock_user_id=`);
+  if (parts.length === 2) return parts.pop()?.split(';').shift() || '';
+  return '';
+}
+
 function CallRoomContent() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -45,8 +53,9 @@ function CallRoomContent() {
   // Load profiles with instant fallback
   useEffect(() => {
     const fetchProfiles = async () => {
+      const cookieUserId = readMockUserId();
       const { data: { session } } = await supabase.auth.getSession();
-      const currentId = session?.user?.id || 'a1111111-1111-1111-1111-111111111111';
+      const currentId = cookieUserId || session?.user?.id || 'a1111111-1111-1111-1111-111111111111';
 
       // Fetch user profiles
       const { data: list } = await supabase.from('profiles').select('*');
