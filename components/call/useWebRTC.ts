@@ -62,8 +62,8 @@ export function useWebRTC(roomId: string, localUserId: string) {
       setLocalStream(stream);
       return stream;
     } catch (err) {
-      console.error('Failed to get local user media stream:', err);
-      throw err;
+      console.warn('Failed to get local user media stream:', err);
+      return null;
     }
   }, [setLocalStream]);
 
@@ -138,6 +138,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
     if (!currentStream) {
       currentStream = await startLocalStream(true, true);
     }
+    if (!currentStream) return;
 
     const pc = getOrCreatePeerConnection(peerId, currentStream);
     try {
@@ -167,6 +168,7 @@ export function useWebRTC(roomId: string, localUserId: string) {
     if (!currentStream) {
       currentStream = await startLocalStream(true, true);
     }
+    if (!currentStream) return;
 
     const pc = getOrCreatePeerConnection(payload.from, currentStream);
 
@@ -389,11 +391,19 @@ export function useWebRTC(roomId: string, localUserId: string) {
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          await startLocalStream(true, true);
-          await channel.track({
-            userId: localUserId,
-            joined_at: new Date().toISOString(),
-          });
+          try {
+            await startLocalStream(true, true);
+          } catch (e) {
+            console.warn('[WebRTC] Could not acquire local media stream:', e);
+          }
+          try {
+            await channel.track({
+              userId: localUserId,
+              joined_at: new Date().toISOString(),
+            });
+          } catch (e) {
+            console.warn('[WebRTC] Presence tracking error:', e);
+          }
         }
       });
 
