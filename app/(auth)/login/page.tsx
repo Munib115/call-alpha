@@ -19,9 +19,11 @@ export default function LoginPage() {
   const router = useRouter();
 
   const handleLoginSuccess = (userId: string) => {
-    // Set mock user cookie to bypass Supabase network auth completely
-    document.cookie = `trio_mock_user_id=${userId}; path=/; max-age=31536000; SameSite=Lax`;
-    
+    // Set cookie with Secure flag on HTTPS (Vercel) and plain on localhost
+    const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+    const secureFlag = isHttps ? '; Secure' : '';
+    document.cookie = `trio_mock_user_id=${userId}; path=/; max-age=31536000; SameSite=Lax${secureFlag}`;
+
     // Redirect to chat
     router.push('/chat');
     router.refresh();

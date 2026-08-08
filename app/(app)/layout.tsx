@@ -2,58 +2,61 @@
 
 import Sidebar from '@/components/sidebar/Sidebar';
 import IncomingCallModal from '@/components/call/IncomingCallModal';
-import { createClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
-import { ReactNode, useEffect, useState, useCallback } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { ReactNode, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useCallStore } from '@/lib/store/callStore';
 import { MobileSidebarContext } from '@/lib/context/MobileSidebarContext';
+import { createClient } from '@/lib/supabase/client';
+
+// Read the mock user cookie reliably (same as client.ts)
+function readMockUserId(): string {
+  if (typeof document === 'undefined') return '';
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; trio_mock_user_id=`);
+  if (parts.length === 2) return parts.pop()?.split(';').shift() || '';
+  return '';
+}
 
 export default function AppLayout({ children }: { children: ReactNode }) {
-  // ALL HOOKS MUST BE DECLARED UNCONDITIONALLY AT THE TOP BEFORE ANY EARLY RETURNS
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const router = useRouter();
-  const supabase = createClient();
+  const pathname = usePathname();
   const { incomingCall, setIncomingCall } = useCallStore();
+  
+  // Stable supabase client ref — never recreated
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
 
   const openMobileSidebar = useCallback(() => setMobileSidebarOpen(true), []);
 
+  // Auth check — reads cookie directly instead of relying on Supabase session
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        router.push('/login');
-      } else {
-        setCurrentUserId(session.user.id);
-        setLoading(false);
-      }
-    };
+    const userId = readMockUserId();
+    if (!userId) {
+      // No cookie set → go to login
+      router.push('/login');
+    } else {
+      setCurrentUserId(userId);
+      setLoading(false);
+    }
+  }, [router]);
 
-    checkAuth();
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || !session) {
-        router.push('/login');
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [router, supabase]);
-
-  // Subscribe to call alerts on mount
+  // Subscribe to incoming call alerts
   useEffect(() => {
     if (!currentUserId) return;
 
-    const globalAlerts = supabase.channel('trio-calls-alerts');
-    
+    const channelName = `trio-calls-alerts-${currentUserId.slice(0, 8)}`;
+    const globalAlerts = supabase.channel(channelName);
+
     globalAlerts
       .on('broadcast', { event: 'call-invite' }, ({ payload }) => {
         const isNotMe = payload.startedBy !== currentUserId;
-        const isTargeted = payload.targetUserId === currentUserId || payload.targetUserId === 'all' || !payload.targetUserId;
+        const isTargeted =
+          payload.targetUserId === currentUserId ||
+          payload.targetUserId === 'all' ||
+          !payload.targetUserId;
 
         if (isNotMe && isTargeted) {
           setIncomingCall({
@@ -71,20 +74,20 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     };
   }, [currentUserId, supabase, setIncomingCall]);
 
-  const handleAcceptCall = () => {
+  const handleAcceptCall = useCallback(() => {
     if (incomingCall) {
       const destination = `/call/${incomingCall.roomId}`;
       setIncomingCall(null);
       router.push(destination);
     }
-  };
+  }, [incomingCall, setIncomingCall, router]);
 
-  const handleRejectCall = () => {
+  const handleRejectCall = useCallback(() => {
     if (incomingCall) {
-      const globalAlerts = supabase.channel('trio-calls-alerts');
-      globalAlerts.subscribe((status) => {
+      const alertsChannel = supabase.channel('trio-calls-alerts-reject');
+      alertsChannel.subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          globalAlerts.send({
+          alertsChannel.send({
             type: 'broadcast',
             event: 'call-declined',
             payload: { roomId: incomingCall.roomId },
@@ -93,9 +96,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       });
       setIncomingCall(null);
     }
-  };
+  }, [incomingCall, setIncomingCall, supabase]);
 
-  // CONDITIONAL EARLY RETURN AFTER ALL HOOKS
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
@@ -118,7 +120,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           {children}
         </main>
 
-        {/* Global calling modal overlay */}
         {incomingCall && (
           <IncomingCallModal
             startedBy={incomingCall.startedBy}
