@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, Suspense } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Profile } from '@/types';
@@ -17,11 +17,11 @@ const MOCK_NAMES: Record<string, string> = {
   'c3333333-3333-3333-3333-333333333333': 'Munib',
 };
 
-export default function ActiveCallPage() {
+function CallRoomContent() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const roomId = params.roomId as string;
+  const roomId = (params.roomId as string) || 'call-default';
   const isInitiator = searchParams.get('initiate') === 'true';
   const targetUserId = searchParams.get('to');
 
@@ -108,8 +108,9 @@ export default function ActiveCallPage() {
       }
     });
 
-    globalAlerts.on('broadcast', { event: 'call-declined' }, ({ payload }) => {
-      if (payload && payload.roomId === roomId) {
+    // Listen for call decline response
+    const declineSub = globalAlerts.on('broadcast', { event: 'call-declined' }, ({ payload }) => {
+      if (payload.roomId === roomId) {
         setCallStatusText('Call Declined');
         setTimeout(() => {
           endCall();
@@ -123,42 +124,55 @@ export default function ActiveCallPage() {
     };
   }, [currentUser, isInitiator, roomId, targetUserId, supabase, endCall, router]);
 
-  // Timer for Call duration
+  // Record call history row when call starts
+  useEffect(() => {
+    if (!currentUser || !isInitiator || historyId) return;
+
+    const recordCallStart = async () => {
+      const { data } = await supabase
+        .from('call_history')
+        .insert({
+          room_id: roomId,
+          started_by: currentUser.id,
+          started_at: new Date().toISOString(),
+          participants: [currentUser.id],
+        })
+        .select('*')
+        .single();
+
+      if (data) {
+        setHistoryId(data.id);
+      }
+    };
+
+    recordCallStart();
+  }, [currentUser, isInitiator, historyId, roomId, supabase]);
+
+  // Call duration timer
   useEffect(() => {
     const timer = setInterval(() => {
       setCallDuration((prev) => prev + 1);
     }, 1000);
+
     return () => clearInterval(timer);
   }, []);
 
   const handleEndCall = useCallback(async () => {
+    if (historyId) {
+      await supabase
+        .from('call_history')
+        .update({ ended_at: new Date().toISOString() })
+        .eq('id', historyId);
+    }
     await endCall();
     router.push('/chat');
-  }, [endCall, router]);
+  }, [historyId, endCall, router, supabase]);
 
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  if (!currentUser) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-400">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
-          <p className="text-sm">Joining call room...</p>
-        </div>
-      </div>
-    );
-  }
-
-  const targetName = targetUserId ? (profiles[targetUserId]?.username || MOCK_NAMES[targetUserId] || 'User') : 'User';
-  const hasRemoteParticipants = Object.keys(remoteStreams).length > 0;
-  const isWaitingForPeer = isInitiator && !hasRemoteParticipants && roomId !== 'trio-main';
+  const targetName = targetUserId && MOCK_NAMES[targetUserId] ? MOCK_NAMES[targetUserId] : 'Participant';
+  const isWaitingForPeer = isInitiator && Object.keys(remoteStreams).length === 0;
 
   return (
-    <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-between relative overflow-hidden select-none">
+    <div className="h-full w-full bg-slate-950 flex flex-col relative overflow-hidden select-none">
       {/* Background radial highlight */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-indigo-600/5 rounded-full blur-[160px] pointer-events-none" />
 
@@ -193,40 +207,20 @@ export default function ActiveCallPage() {
         </div>
       )}
 
-      {/* Floating Top Header bar */}
-      <div className="w-full max-w-6xl px-6 py-4 flex items-center justify-between z-10">
-        <div className="flex flex-col">
-          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-            Room Session
-          </span>
-          <span className="text-sm font-bold text-white uppercase tracking-wide">
-            {roomId === 'trio-main' ? 'trio-main (Group)' : 'Direct Video Call'}
-          </span>
-        </div>
-
-        <div className="px-4 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06] backdrop-blur-md text-sm font-bold text-emerald-400 tabular-nums">
-          {formatDuration(callDuration)}
-        </div>
-
-        <div className="text-xs font-semibold text-slate-400">
-          {participants.length} Participant{participants.length !== 1 ? 's' : ''}
-        </div>
-      </div>
-
-      {/* Video Tile Grid */}
-      <div className="flex-1 w-full max-w-6xl flex items-center justify-center p-4 z-10 overflow-hidden">
+      {/* Main Video Tile Grid */}
+      <div className="flex-1 p-4 md:p-6 overflow-hidden flex items-center justify-center z-10">
         <VideoGrid
           localStream={localStream}
           remoteStreams={remoteStreams}
+          currentUsername={currentUser?.username || 'You'}
           profiles={profiles}
-          currentUsername={currentUser.username}
           isLocalMuted={isMuted}
           isLocalCamOff={isCamOff}
         />
       </div>
 
-      {/* Control Actions bar */}
-      <div className="w-full max-w-6xl p-6 flex items-center justify-center z-10">
+      {/* Fixed Bottom Call Controls Bar */}
+      <div className="z-20">
         <CallControls
           onMuteToggle={toggleMute}
           onCameraToggle={toggleCamera}
@@ -235,5 +229,22 @@ export default function ActiveCallPage() {
         />
       </div>
     </div>
+  );
+}
+
+export default function ActiveCallPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="h-full flex items-center justify-center bg-slate-950 text-slate-400">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
+            <p className="text-sm font-medium tracking-wide">Connecting to call room...</p>
+          </div>
+        </div>
+      }
+    >
+      <CallRoomContent />
+    </Suspense>
   );
 }
