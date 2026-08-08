@@ -20,7 +20,7 @@ export default function IconButton({
   type = 'button',
 }: IconButtonProps) {
   const baseStyle =
-    'p-3 rounded-xl flex items-center justify-center transition-all duration-200 outline-none select-none active:scale-[0.96] disabled:opacity-50 disabled:pointer-events-none';
+    'p-3 rounded-xl flex items-center justify-center transition-all duration-150 outline-none select-none active:scale-[0.95] disabled:opacity-50 disabled:pointer-events-none touch-manipulation cursor-pointer';
 
   const variants = {
     primary:

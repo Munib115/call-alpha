@@ -213,7 +213,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
                   >
                     <button
                       onClick={() => navigateTo(dmPath)}
-                      className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                      className="flex items-center gap-3 flex-1 min-w-0 text-left cursor-pointer touch-manipulation active:opacity-75 transition-opacity"
                     >
                       <Avatar src={p.avatar_url} alt={p.username} status={userStatus} />
                       <div className="min-w-0">
@@ -225,7 +225,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
                         </p>
                       </div>
                     </button>
-                    <div className="flex gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                    <div className="flex gap-1 items-center">
                       <IconButton
                         title="Chat"
                         onClick={() => navigateTo(dmPath)}
